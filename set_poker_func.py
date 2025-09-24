@@ -165,7 +165,7 @@ def simulate_simple_game(my_hand=None, opponent_hand=None):
 
 
 # simulate game detaily
-def simulate_detail_game(my_hand, community_card=None, opponent_num=1, opponent_hands_or_vpip=[100], epoch=10000, street="preflop"):
+def simulate_detail_game(my_hand, community_card=None, opponent_num=1, opponent_hands_or_vpip=(100), epoch=10000, street="preflop"):
     # import package
     from preflop_func import vpip_range, build_preflop_winrate_df
     from compete_hands import evaluate_hand, get_hand_score
