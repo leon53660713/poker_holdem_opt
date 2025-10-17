@@ -1,16 +1,22 @@
 # import package
 # basic
 import random
+import math
+import scipy.stats as st
 
 
 '''
 including function : 
 * generate_deck(shuffled=True)
 * get_hand_label(card1, card2)
-* hand_to_code()
+* hand_to_code_all()
+* hand_to_code(hand)
 * code_to_hand(hand_code)
 * simulate_simple_game(my_hand=None, opponent_hand=None)
 * simulate_detail_game(my_hand, community_card=None, opponent_num=1, opponent_hands_or_vpip=[100], epoch=10000, street="preflop")
+* find_epoch_inCI(my_hand, community_card, opp_num, opp_hand_or_vpip, street, without_spec_enemy,
+                    target_confidence=0.95, epsilon=0.02, max_epoch=10000, simulate_batch=30, show_log=True)
+* 
 * 
 
 '''
@@ -48,7 +54,7 @@ def get_hand_label(card1, card2):
 
 # generat all unique hands
 # change [("spade", "A"), ("spade", "K")] into AKs
-def hand_to_code():
+def hand_to_code_all():
     from judge_hands_func import rank_map
     unique_hands = []
     for i, r1 in enumerate(rank_map):
@@ -63,6 +69,24 @@ def hand_to_code():
             elif i == j:
                 unique_hands.append([('spade', r1), ('heart', r2)])
     return unique_hands
+
+
+
+# change [("spade", "A"), ("spade", "K")] into AKs
+def hand_to_code(hand):
+    from judge_hands_func import rank_map
+    ranks = [h[1] for h in hand]
+    suits = [h[0] for h in hand]
+    r1, r2 = ranks
+    # suit or not
+    suited = "s" if suits[0] == suits[1] else "o"
+    # sort by rank
+    if rank_map[r1] < rank_map[r2]:
+        r1, r2 = r2, r1
+    # if pair
+    if r1 == r2:
+        return f"{r1}{r2}"
+    return f"{r1}{r2}{suited}"
 
 
 
@@ -165,7 +189,8 @@ def simulate_simple_game(my_hand=None, opponent_hand=None):
 
 
 # simulate game detaily
-def simulate_detail_game(my_hand, community_card=None, opponent_num=1, opponent_hands_or_vpip=(100), epoch=10000, street="preflop"):
+def simulate_detail_game(my_hand, community_card=None, opponent_num=1, opponent_hands_or_vpip=(100), epoch=10000, street="preflop",
+    without_spec_enemy=None):
     # import package
     from preflop_func import vpip_range, build_preflop_winrate_df
     from compete_hands import evaluate_hand, get_hand_score
@@ -179,8 +204,18 @@ def simulate_detail_game(my_hand, community_card=None, opponent_num=1, opponent_
     # set preflop_winrate_df
     preflop_df_dict = {i: globals()[f"preflop_winrate_df_{i}"] for i in range(1, 10)}
     preflop_df = preflop_df_dict.get(opponent_num)
+
+    # if not fill in, all compete
+    if without_spec_enemy is None:
+        without_spec_enemy = [1] * opponent_num
+    if len(without_spec_enemy) != opponent_num:
+        raise ValueError("without_spec_enemy length must equal opponent_num")
+    
     # init count
     win_count, tie_count = 0, 0
+    # set all prob hands
+    all_hands = vpip_range(preflop_df, 100)["hand"].tolist()
+
     # repeat
     for _ in range(epoch):
         # init deck
@@ -205,7 +240,14 @@ def simulate_detail_game(my_hand, community_card=None, opponent_num=1, opponent_
         elif isinstance(opponent_hands_or_vpip, tuple):
             for i in range(opponent_num):
                 vpip_df = vpip_range(preflop_df, opponent_hands_or_vpip[i])
-                candidate_hands = vpip_df["hand"].tolist()
+                candidate_hands_vpip = vpip_df["hand"].tolist()
+                
+                # get enemy's hand not include in vpip
+                if without_spec_enemy[i] == 0:
+                    candidate_hands = list(set(all_hands) - set(candidate_hands_vpip))
+                else:
+                    candidate_hands = candidate_hands_vpip
+
                 while True:
                     hand_code = random.choice(candidate_hands)
                     opp_hand = code_to_hand(hand_code)
@@ -215,6 +257,7 @@ def simulate_detail_game(my_hand, community_card=None, opponent_num=1, opponent_
                             deck.remove(c)
                         current_opponent_hands.append(opp_hand)
                         break
+        
         # else--random
         else:
             for _ in range(opponent_num):
@@ -249,9 +292,12 @@ def simulate_detail_game(my_hand, community_card=None, opponent_num=1, opponent_
 
         # get enemy_hand score
         enemy_scores = []
-        for hand in current_opponent_hands:
+        for hand, exclude_flag in zip(current_opponent_hands, without_spec_enemy):
             result = evaluate_hand(hand + board, return_best_cards=True)
-            enemy_scores.append(get_hand_score(result))
+            score = get_hand_score(result)
+            # when 0, get in compete
+            if exclude_flag == 1:
+                enemy_scores.append(score)
 
         # find winner
         max_score = max(enemy_scores + [my_score])
@@ -265,3 +311,67 @@ def simulate_detail_game(my_hand, community_card=None, opponent_num=1, opponent_
     win_rate = round(win_count / epoch, 4)
     tie_rate = round(tie_count / epoch, 4)
     return my_hand, community_card, win_rate, tie_rate, opponent_hands_or_vpip if opponent_hands_or_vpip else "random"
+
+
+
+
+
+# find least simulating epoch
+def find_epoch_inCI(my_hand, community_card, opp_num, opp_hand_or_vpip, street, without_spec_enemy,
+                    target_confidence=0.95, epsilon=0.02, max_epoch=10000, simulate_batch=30, show_log=True):
+
+    # use target CI to find z value
+    ## 95% CI--> z = 1.96
+    alpha = 1 - target_confidence
+    z = st.norm.ppf(1 - alpha / 2)
+
+    wins = 0
+    checked = 0 
+
+    # by CLT
+    # n >= \frac{z^{2}_{2/a} * p * (1-p)}{e^2}
+    # but p unknow --> set p = 0.5 is maxium
+    upper_bound_epoch = math.ceil((z ** 2) * 0.25 / (epsilon ** 2))
+    if show_log:
+        print(f"CI : {target_confidence*100:.1f}% → z={z:.3f}")
+        print(f"theorical : need at least {upper_bound_epoch} epoch to reach ±{epsilon*100:.1f}% accuracy\n")
+
+    for i in range(1, max_epoch + 1):
+        # simulate
+        _, _, win_rate, _, _ = simulate_detail_game(
+            my_hand=my_hand,
+            community_card=community_card,
+            opponent_num=opp_num,
+            opponent_hands_or_vpip=opp_hand_or_vpip,
+            epoch=simulate_batch,
+            street=street,
+            without_spec_enemy=without_spec_enemy
+        )
+        wins += win_rate
+        checked += 1
+
+        # checking after every 50 epoch 
+        if i % 50 == 0:
+            # p hat
+            p_hat = wins / checked
+            se = math.sqrt(p_hat * (1 - p_hat) / checked)
+            margin = z * se
+            # show log
+            if show_log:
+                print(f"Epoch={checked:5d}, estimate win rate p̂={p_hat:.3f}, with {int(target_confidence*100)}%CI ±{margin:.3f} epsilon")
+
+            if margin <= epsilon:
+                if show_log:
+                    print(f"\ncomplete converge {target_confidence*100:.1f}% CI with epsilon ±{margin:.3f} ≦ ±{epsilon:.3f}")
+                    print(f"simulating epochs : {checked}, estimate win rate ≈ {p_hat:.4f}")
+                return checked
+
+    # if not meet epsilon
+    p_hat = wins / checked
+    se = math.sqrt(p_hat * (1 - p_hat) / checked)
+    margin = z * se
+    if show_log:
+        print(f"\n not converge : meet max simulating times : {checked}, {int(target_confidence*100)}%CI=±{margin:.3f} (target : ±{epsilon:.3f})")
+        print(f"estimate win rate ≈{p_hat:.4f}")
+
+    return checked
