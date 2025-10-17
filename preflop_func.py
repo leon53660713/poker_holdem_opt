@@ -109,7 +109,7 @@ def simulate_preflop(my_hand, opponent_num=1, opponent_hands_or_vpip=None, epoch
 
 # def build preflop winrate df
 def build_preflop_winrate_df(opponent_num=1, epoch=None, save_path=None, simulate=True):
-    from set_poker_func import hand_to_code, get_hand_label
+    from set_poker_func import hand_to_code_all, get_hand_label
     old_df = None
     # if there are old data, load
     if save_path and os.path.exists(save_path):
@@ -140,7 +140,7 @@ def build_preflop_winrate_df(opponent_num=1, epoch=None, save_path=None, simulat
 
     # new simulate
     new_records = []
-    for hand in hand_to_code():
+    for hand in hand_to_code_all():
         label = get_hand_label(hand[0], hand[1])
         _, win_rate, tie_rate, _, _ = simulate_preflop(my_hand=hand, opponent_num=opponent_num, opponent_hands_or_vpip=None, epoch=epoch)
         new_records.append({
